@@ -1,0 +1,131 @@
+#部署 Service Headless，用于Kafka间相互通信
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-headless
+  labels:
+    app: kafka
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+  - name: kafka
+    port: 9092
+    targetPort: kafka
+  selector:
+    app: kafka
+---
+#部署 Service，用于外部访问 kafka
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  labels:
+    app: kafka
+spec:
+  type: NodePort
+  ports:
+  - name: kafka
+    port: 9092
+    targetPort: 9092
+    nodePort: 32192
+    protocol: TCP 
+  selector:
+    app: kafka
+---
+#配置控制器保证POD集群处于运行状态最低个数
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+  name: kafka-pdb
+spec:
+  selector:
+    matchLabels:
+      app: kafka
+  minAvailable: 2
+---
+#配置StatefulSet
+apiVersion: apps/v1beta2
+kind: StatefulSet
+metadata:
+  name: kafka
+spec:
+  podManagementPolicy: OrderedReady
+  replicas: 3
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: kafka            
+  serviceName: kafka-headless
+  template:
+    metadata:
+      annotations:
+      labels:
+        app: kafka
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: "app"
+                    operator: In
+                    values: 
+                    - kafka
+              topologyKey: "kubernetes.io/hostname"       
+      containers:
+      - name: kafka
+        imagePullPolicy: Always
+        image: 192.168.8.183/library/kafka-zyxf:2.2.0
+        resources:
+          requests:
+            memory: "500m"
+            cpu: "256m"
+        ports:
+        - containerPort: 9092
+          name: kafka
+        env:
+        - name: KAFKA_HEAP_OPTS
+          value : "-Xmx500M -Xms500M"
+        command:
+        - sh
+        - -c
+        - "/app/kafka/bin/kafka-server-start.sh /app/kafka/config/server.properties  \
+          --override broker.id=${HOSTNAME##*-} \
+          --override zookeeper.connect=zookeeper:2181 \
+          --override listeners=PLAINTEXT://:9092  \
+          --override advertised.listeners=PLAINTEXT://:9092  \
+          --override broker.id.generation.enable=false  \
+          --override auto.create.topics.enable=false \
+          --override min.insync.replicas=2 \
+          --override log.dir= \
+          --override log.dirs=/app/kafka/kafka-logs \
+          --override offsets.retention.minutes=10080 \
+          --override default.replication.factor=3 \
+          --override queued.max.requests=2000 \
+          --override num.network.threads=8 \
+          --override num.io.threads=16 \
+          --override auto.create.topics.enable=false \
+          --override socket.send.buffer.bytes=1048576 \
+          --override socket.receive.buffer.bytes=1048576 \
+          --override num.replica.fetchers=4 \
+          --override replica.fetch.max.bytes=5242880 \
+          --override replica.socket.receive.buffer.bytes=1048576"
+        volumeMounts:
+        - name: datadir
+          mountPath: /app/kafka/kafka-logs
+      volumes:
+      - name: datadir
+        emptyDir: {}    
+#        volumeMounts:
+#        - name: data
+#          mountPath: /renzhiyuan/kafka
+#  volumeClaimTemplates:
+#  - metadata:
+#      name: data
+#    spec:
+#      accessModes: [ "ReadWriteOnce" ]
+#      storageClassName: local-storage
+#      resources:
+#        requests:
+#          storage: 3Gi
