@@ -1,0 +1,139 @@
+#部署 Service Headless，用于Zookeeper间相互通信
+apiVersion: v1
+kind: Service
+metadata:
+  name: zookeeper-headless
+  labels:
+    app: zookeeper
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+  - name: client
+    port: 2181
+    targetPort: client
+  - name: server
+    port: 2222
+    targetPort: server
+  - name: leader-election
+    port: 2223
+    targetPort: leader-election
+  selector:
+    app: zookeeper
+---
+#部署 Service，用于外部访问 Zookeeper
+apiVersion: v1
+kind: Service
+metadata:
+  name: zookeeper
+  labels:
+    app: zookeeper
+spec:
+  type: NodePort
+  ports:
+  - name: client
+    port: 2181
+    targetPort: 2181
+    nodePort: 32181
+    protocol: TCP 
+  selector:
+    app: zookeeper
+---
+#配置控制器保证POD集群处于运行状态最低个数
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+  name: zk-pdb
+spec:
+  selector:
+    matchLabels:
+      app: zookeeper
+  minAvailable: 2
+---
+#配置StatefulSet
+apiVersion: apps/v1beta2
+kind: StatefulSet
+metadata:
+  name: zookeeper
+spec:
+  podManagementPolicy: OrderedReady
+  replicas: 3
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: zookeeper            
+  serviceName: zookeeper-headless
+  template:
+    metadata:
+      annotations:
+      labels:
+        app: zookeeper
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: "app"
+                    operator: In
+                    values: 
+                    - zookeeper
+              topologyKey: "kubernetes.io/hostname"       
+      containers:
+      - name: zookeeper
+        imagePullPolicy: Always
+        image: 192.168.8.183/library/zookeeper-zyxf:3.4.12
+        resources:
+          requests:
+            memory: "512m"
+            cpu: "500m"
+        ports:
+        - containerPort: 2181
+          name: client
+        - containerPort: 2222
+          name: server
+        - containerPort: 2223
+          name: leader-election
+        env:
+        - name : ZK_REPLICAS
+          value: "3"
+        - name : ZK_DATA_DIR
+          value: "/app/zookeeper/data"
+        - name : ZK_DATA_LOG_DIR
+          value: "/app/zookeeper/dataLog"
+        - name : ZK_TICK_TIME
+          value: "3000"
+        - name : ZK_INIT_LIMIT
+          value: "10"
+        - name : ZK_SYNC_LIMIT
+          value: "5"
+        - name : ZK_MAX_CLIENT_CNXNS
+          value: "100"
+        - name: ZK_CLIENT_PORT
+          value: "2181"
+        - name: ZK_SERVER_PORT
+          value: "2222"
+        - name: ZK_ELECTION_PORT
+          value: "2223"       
+        command:
+        - sh
+        - -c
+        - /app/zookeeper/bin/zkGenConfig.sh &&  /app/zookeeper/bin/zkServer.sh start-foreground
+        volumeMounts:
+        - name: datadir
+          mountPath: /app/zookeeper/data
+      volumes:
+      - name: datadir
+        emptyDir: {}    
+#        volumeMounts:
+#        - name: data
+#          mountPath: /renzhiyuan/zookeeper
+#  volumeClaimTemplates:
+#  - metadata:
+#      name: data
+#    spec:
+#      accessModes: [ "ReadWriteOnce" ]
+#      storageClassName: local-storage
+#      resources:
+#        requests:
+#          storage: 3Gi
